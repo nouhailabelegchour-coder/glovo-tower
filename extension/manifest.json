@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Glovo Ops Control Tower — Scraper",
+  "version": "1.0.0",
+  "description": "Scans the Glovo partner portal for offline stores and streams KPIs to the Control Tower API.",
+  "permissions": ["storage", "alarms", "scripting", "activeTab"],
+  "host_permissions": [
+    "https://portal.glovoapp.com/*",
+    "http://localhost:3000/*",
+    "https://*.vercel.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://portal.glovoapp.com/dashboard*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Scan Glovo dashboard now"
+  }
+}
