@@ -1,10 +1,9 @@
 /**
- * GET /api/alerts?severity=CRITICAL&store=Casablanca%201
- *   Returns the most recent alerts, newest first.
+ * GET /api/alerts?severity=CRITICAL&store=...&limit=50
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/store";
+import { getAlerts } from "@/lib/store";
 import { AlertSeverity } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -16,9 +15,9 @@ export async function GET(req: NextRequest) {
   const store = sp.get("store");
   const limit = Number(sp.get("limit") ?? 100);
 
-  let alerts = [...db.alerts].reverse();
+  let alerts = await getAlerts(limit);
   if (severity) alerts = alerts.filter((a) => a.severity === severity);
   if (store) alerts = alerts.filter((a) => a.store === store);
 
-  return NextResponse.json({ alerts: alerts.slice(0, limit) });
+  return NextResponse.json({ alerts });
 }

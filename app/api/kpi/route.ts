@@ -1,22 +1,25 @@
 /**
- * POST /api/kpi
- *   Accepts a KpiPayload JSON body, validates it, persists it, runs the
- *   anomaly engine, and returns freshly-generated alerts + diagnosis.
- *
- * GET  /api/kpi
- *   Returns the last N payloads (for dashboard hydration).
+ * POST /api/kpi          — ingest a single KpiPayload (from extension / simulator)
+ * POST /api/kpi (array)  — ingest many at once (from Manual Upload UI)
+ * GET  /api/kpi          — return the last N payloads for dashboard hydration
+ * DELETE /api/kpi        — wipe the store (useful while debugging)
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { analyzePayload } from "@/lib/anomaly";
-import { db, updateBaseline } from "@/lib/store";
-import { KpiPayload } from "@/lib/types";
+import {
+  clearAll,
+  getBaseline,
+  getPayloads,
+  pushAlerts,
+  pushPayload,
+  updateBaseline,
+} from "@/lib/store";
+import { Alert, KpiPayload } from "@/lib/types";
 
-// Ensure Node runtime (not Edge) for map-based in-memory store.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Runtime payload validation (keeps the bundle dep-free). */
 function validate(body: unknown): body is KpiPayload {
   if (!body || typeof body !== "object") return false;
   const b = body as Record<string, unknown>;
@@ -34,46 +37,59 @@ function validate(body: unknown): body is KpiPayload {
   );
 }
 
+async function ingest(payload: KpiPayload) {
+  const baseline = await getBaseline(payload.store);
+  const { alerts, diagnosis } = analyzePayload(payload, baseline);
+  await pushPayload(payload);
+  await pushAlerts(alerts);
+  await updateBaseline(payload);
+  return { alerts, diagnosis };
+}
+
 export async function POST(req: NextRequest) {
   let body: unknown;
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json(
-      { ok: false, error: "Invalid JSON" },
-      { status: 400 }
-    );
+    return NextResponse.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  if (!validate(body)) {
-    return NextResponse.json(
-      { ok: false, error: "Schema validation failed" },
-      { status: 422 }
-    );
+  // Accept a single object OR an array (bulk upload).
+  const items = Array.isArray(body) ? body : [body];
+
+  const allAlerts: Alert[] = [];
+  const allDiag: string[] = [];
+  let accepted = 0;
+  const errors: string[] = [];
+
+  for (const raw of items) {
+    if (!validate(raw)) {
+      errors.push(`Row rejected: ${JSON.stringify(raw).slice(0, 80)}`);
+      continue;
+    }
+    const { alerts, diagnosis } = await ingest(raw);
+    allAlerts.push(...alerts);
+    allDiag.push(...diagnosis);
+    accepted++;
   }
 
-  const payload = body as KpiPayload;
-
-  // Pull baseline *before* updating so we compare against history.
-  const baseline = db.baselines.get(payload.store);
-  const { alerts, diagnosis } = analyzePayload(payload, baseline);
-
-  // Persist
-  db.payloads.push(payload);
-  db.alerts.push(...alerts);
-  updateBaseline(payload);
-
-  // Cap history size
-  if (db.payloads.length > 5000) db.payloads.splice(0, db.payloads.length - 5000);
-  if (db.alerts.length > 2000) db.alerts.splice(0, db.alerts.length - 2000);
-
-  return NextResponse.json({ ok: true, alerts, diagnosis });
+  return NextResponse.json({
+    ok: true,
+    accepted,
+    rejected: errors.length,
+    errors,
+    alerts: allAlerts,
+    diagnosis: allDiag,
+  });
 }
 
 export async function GET(req: NextRequest) {
   const limit = Number(req.nextUrl.searchParams.get("limit") ?? 200);
-  return NextResponse.json({
-    payloads: db.payloads.slice(-limit),
-    count: db.payloads.length,
-  });
+  const payloads = await getPayloads(limit);
+  return NextResponse.json({ payloads, count: payloads.length });
+}
+
+export async function DELETE() {
+  await clearAll();
+  return NextResponse.json({ ok: true });
 }
